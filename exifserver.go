@@ -55,55 +55,35 @@ func nextTable(dec *xml.Decoder) (*Table, error) {
 }
 
 func writeJson(w http.ResponseWriter, tc <-chan Table, wg *sync.WaitGroup) {
-	w.Header().Set("Content-Type", "application/json")
-
-	_, err := w.Write([]byte(`{"tags": [`))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	enc := json.NewEncoder(w)
-	needsComma := false
 	for table := range tc {
-		for _, tag := range table.Tags {
-			if needsComma {
-				_, err = w.Write([]byte(","))
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-			}
+		tags := struct {
+			Tags []Output `json:"tags"`
+		}{}
 
+		for _, tag := range table.Tags {
 			descriptions := make(map[string]string)
 			for _, desc := range tag.Descriptions {
 				descriptions[desc.Lang] = desc.Value
 			}
 
-			err = enc.Encode(Output{
+			tags.Tags = append(tags.Tags, Output{
 				Writable: tag.Writable,
 				Path:     fmt.Sprintf("%s:%s", table.Name, tag.Name),
 				Group:    tag.Name,
 				Desc:     descriptions,
 				Type:     tag.Type,
 			})
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+		}
 
-			needsComma = true
+		err := enc.Encode(tags)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		wg.Done()
 	}
-
-	_, err = w.Write([]byte(`]}`))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	wg.Done()
 }
 
 func tableIterator(dec *xml.Decoder, c chan<- Table, wg *sync.WaitGroup) error {
@@ -154,18 +134,16 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	wg := &sync.WaitGroup{}
 	c := make(chan Table, 10)
+	defer close(c)
+
 	go writeJson(w, c, wg)
 
-	dec := xml.NewDecoder(rdr)
-	err = tableIterator(dec, c, wg)
+	err = tableIterator(xml.NewDecoder(rdr), c, wg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
-	wg.Wait() // wait for table handling completion
 
-	wg.Add(1)
-	close(c)
-	wg.Wait() // wait for json closing tags
+	wg.Wait()
 }
 
 func main() {
