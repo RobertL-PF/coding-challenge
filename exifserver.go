@@ -53,42 +53,16 @@ func nextTable(dec *xml.Decoder) (*Table, error) {
 	}
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/tags" {
-		http.Error(w, "Das sind nicht die Droiden, die ihr sucht", http.StatusNotFound)
-		return
-	}
+func writeJson(w http.ResponseWriter, dec *xml.Decoder) {
+	w.Header().Set("Content-Type", "application/json")
 
-	rdr, wrt := io.Pipe()
-
-	cmd := exec.CommandContext(r.Context(), "exiftool", "-listx")
-	cmd.Stdout = wrt
-	err := cmd.Start()
-	if err != nil {
-		log.Println(err)
-	}
-
-	go func() {
-		err := cmd.Wait()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		rdr.Close()
-		wrt.Close()
-	}()
-
-	dec := xml.NewDecoder(rdr)
-	enc := json.NewEncoder(w)
-
-	_, err = w.Write([]byte(`{"tags": [`))
+	_, err := w.Write([]byte(`{"tags": [`))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-
+	enc := json.NewEncoder(w)
 	needsComma := false
 	for {
 		table, err := nextTable(dec)
@@ -139,6 +113,35 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func handler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/tags" {
+		http.Error(w, "Das sind nicht die Droiden, die ihr sucht", http.StatusNotFound)
+		return
+	}
+
+	rdr, wrt := io.Pipe()
+
+	cmd := exec.CommandContext(r.Context(), "exiftool", "-listx")
+	cmd.Stdout = wrt
+	err := cmd.Start()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		rdr.Close()
+		wrt.Close()
+	}()
+
+	dec := xml.NewDecoder(rdr)
+	writeJson(w, dec)
 }
 
 func main() {
