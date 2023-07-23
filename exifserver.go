@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"sync"
 )
 
 type Desc struct {
@@ -53,7 +54,7 @@ func nextTable(dec *xml.Decoder) (*Table, error) {
 	}
 }
 
-func writeJson(w http.ResponseWriter, dec *xml.Decoder) {
+func writeJson(w http.ResponseWriter, tc <-chan Table, wg *sync.WaitGroup) {
 	w.Header().Set("Content-Type", "application/json")
 
 	_, err := w.Write([]byte(`{"tags": [`))
@@ -64,21 +65,7 @@ func writeJson(w http.ResponseWriter, dec *xml.Decoder) {
 
 	enc := json.NewEncoder(w)
 	needsComma := false
-	for {
-		table, err := nextTable(dec)
-		if err != nil {
-			if errors.Is(err, io.ErrClosedPipe) {
-				break
-			}
-
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		if table == nil {
-			break
-		}
-
+	for table := range tc {
 		for _, tag := range table.Tags {
 			if needsComma {
 				_, err = w.Write([]byte(","))
@@ -107,12 +94,37 @@ func writeJson(w http.ResponseWriter, dec *xml.Decoder) {
 
 			needsComma = true
 		}
+
+		wg.Done()
 	}
 
 	_, err = w.Write([]byte(`]}`))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Fatal(err)
 	}
+
+	wg.Done()
+}
+
+func tableIterator(dec *xml.Decoder, c chan<- Table, wg *sync.WaitGroup) error {
+	for {
+		table, err := nextTable(dec)
+		if err != nil {
+			if errors.Is(err, io.ErrClosedPipe) {
+				break
+			}
+			return err
+		}
+
+		if table == nil {
+			break
+		}
+
+		wg.Add(1)
+		c <- *table
+	}
+
+	return nil
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -140,8 +152,20 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		wrt.Close()
 	}()
 
+	wg := &sync.WaitGroup{}
+	c := make(chan Table, 10)
+	go writeJson(w, c, wg)
+
 	dec := xml.NewDecoder(rdr)
-	writeJson(w, dec)
+	err = tableIterator(dec, c, wg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+	wg.Wait() // wait for table handling completion
+
+	wg.Add(1)
+	close(c)
+	wg.Wait() // wait for json closing tags
 }
 
 func main() {
